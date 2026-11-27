@@ -64,16 +64,22 @@ func Host(req *http.Request) string {
 }
 
 // ErrInvalid means a public URL is not an origin Parse accepts.
-var ErrInvalid = errors.New("the public URL must be http:// or https:// and a host, with no path, query, or user")
+var ErrInvalid = errors.New(
+	"the public URL must be http:// or https:// and a host, with no path, query, or user",
+)
 
 // Parse reads a public URL such as https://app.example.com and returns its
 // origin as a browser serializes it: lowercase, without the scheme's default
 // port, without a trailing slash. It accepts ASCII hostnames (an
 // internationalized name in its xn-- form), IPv4 addresses, and IPv6
 // addresses without a zone, with an optional port from 1 to 65535.
+//
+// A refused URL's error wraps ErrInvalid and names at most its scheme and
+// host, never its user, password, path, or query, which may hold a
+// credential.
 func Parse(text string) (string, error) {
-	invalid := fmt.Errorf("%w: %q", ErrInvalid, text)
 	parsed, err := url.Parse(strings.TrimSuffix(strings.TrimSpace(text), "/"))
+	invalid := invalidError(parsed, err)
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") ||
 		parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery ||
 		parsed.Fragment != "" || parsed.User != nil || parsed.Opaque != "" {
@@ -100,6 +106,16 @@ func Parse(text string) (string, error) {
 	return parsed.Scheme + "://" + host, nil
 }
 
+// invalidError is ErrInvalid naming the scheme and host of a refused URL,
+// or nothing when it did not parse or has no host, so a credential in the
+// URL never reaches a log or a terminal.
+func invalidError(parsed *url.URL, parseErr error) error {
+	if parseErr != nil || parsed.Host == "" {
+		return ErrInvalid
+	}
+	return fmt.Errorf("%w: got %s://%s", ErrInvalid, parsed.Scheme, parsed.Host)
+}
+
 // isDecimal reports whether label is one or more decimal digits.
 func isDecimal(label string) bool {
 	if label == "" {
@@ -117,7 +133,8 @@ func isDecimal(label string) bool {
 // false for anything else: a zone, a character outside ASCII letters,
 // digits, hyphens, and dots, or an empty label.
 func canonicalHost(hostname string) (string, bool) {
-	if address, err := netip.ParseAddr(hostname); err == nil {
+	address, err := netip.ParseAddr(hostname)
+	if err == nil {
 		// A browser writes an IPv4-mapped address in hexadecimal, which
 		// netip does not; such an origin is refused rather than misnamed.
 		if address.Zone() != "" || address.Is4In6() {
@@ -144,7 +161,8 @@ func canonicalHost(hostname string) (string, bool) {
 			return "", false
 		}
 		for _, character := range []byte(label) {
-			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') &&
+				character != '-' {
 				return "", false
 			}
 		}

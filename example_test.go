@@ -14,10 +14,14 @@ func ExampleMiddleware() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler := publicorigin.Middleware(origin)(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	printOrigin := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		fmt.Println(publicorigin.Origin(req), publicorigin.Secure(req))
-	}))
+	})
+	handler := publicorigin.Middleware(origin)(printOrigin)
 	// The proxy ended TLS, so the request arrives over plain HTTP.
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://10.0.0.5:8080/", nil))
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://10.0.0.5:8080/", nil),
+	)
 	// Output: https://app.example.com true
 }

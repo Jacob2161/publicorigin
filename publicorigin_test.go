@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,13 +20,30 @@ func TestOrigin(t *testing.T) {
 		secure           bool
 		host             string
 	}{
-		{"https behind a proxy", "https://backup.example.com", false, "https://backup.example.com", true, "backup.example.com"},
-		{"http server URL", "http://backup.internal:8080", false, "http://backup.internal:8080", false, "backup.internal:8080"},
+		{
+			"https behind a proxy",
+			"https://backup.example.com",
+			false,
+			"https://backup.example.com",
+			true,
+			"backup.example.com",
+		},
+		{
+			"http server URL",
+			"http://backup.internal:8080",
+			false,
+			"http://backup.internal:8080",
+			false,
+			"backup.internal:8080",
+		},
 		{"no server URL, TLS", "", true, "https://server.test", true, "server.test"},
 		{"no server URL, plain", "", false, "http://server.test", false, "server.test"},
 	} {
 		var seen *http.Request
-		handler := Middleware(step.configured)(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { seen = req }))
+		recordRequest := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			seen = req
+		})
+		handler := Middleware(step.configured)(recordRequest)
 		req := httptest.NewRequest(http.MethodGet, "http://server.test/", nil)
 		req.Header.Set("X-Forwarded-Proto", "https")
 		req.Header.Set("X-Forwarded-Host", "evil.example")
@@ -34,7 +52,16 @@ func TestOrigin(t *testing.T) {
 		}
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if Origin(seen) != step.origin || Secure(seen) != step.secure || Host(seen) != step.host {
-			t.Errorf("%s: %s %v %s", step.name, Origin(seen), Secure(seen), Host(seen))
+			t.Errorf(
+				"%s: Origin, Secure, Host = %s %v %s; want %s %v %s",
+				step.name,
+				Origin(seen),
+				Secure(seen),
+				Host(seen),
+				step.origin,
+				step.secure,
+				step.host,
+			)
 		}
 	}
 }
@@ -48,20 +75,37 @@ func TestParse(t *testing.T) {
 		"http://backup.internal:80":      "http://backup.internal",
 		"https://[::1]:443":              "https://[::1]",
 	} {
-		if got, err := Parse(text); err != nil || got != want {
-			t.Errorf("%s: %s %v", text, got, err)
+		got, err := Parse(text)
+		if err != nil || got != want {
+			t.Errorf("Parse(%q) = %q, %v; want %q", text, got, err, want)
 		}
 	}
-	for _, text := range []string{"backup.example.com", "ftp://x", "https://x/path", "https://user@x", "https://x?a=1", "", "https://:443", "https://x:"} {
+	for _, text := range []string{
+		"backup.example.com",
+		"ftp://x",
+		"https://x/path",
+		"https://user@x",
+		"https://x?a=1",
+		"",
+		"https://:443",
+		"https://x:",
+	} {
 		if _, err := Parse(text); !errors.Is(err, ErrInvalid) {
-			t.Errorf("%s: %v", text, err)
+			t.Errorf("Parse(%q) = %v, want ErrInvalid", text, err)
 		}
 	}
 }
 
 // FuzzParse checks that Parse's origins parse again to themselves.
 func FuzzParse(f *testing.F) {
-	for _, seed := range []string{"https://app.example.com", "http://10.0.0.5:8080/", "HTTPS://A.B:443", "https://[::1]:8443", "http://[fe80::1%25eth0]", "https://x:0443"} {
+	for _, seed := range []string{
+		"https://app.example.com",
+		"http://10.0.0.5:8080/",
+		"HTTPS://A.B:443",
+		"https://[::1]:8443",
+		"http://[fe80::1%25eth0]",
+		"https://x:0443",
+	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, text string) {
@@ -107,7 +151,34 @@ func TestParseCanonical(t *testing.T) {
 		"http://[::ffff:192.0.2.1]",
 	} {
 		if _, err := Parse(text); !errors.Is(err, ErrInvalid) {
-			t.Errorf("Parse(%q) accepted: %v", text, err)
+			t.Errorf("Parse(%q) = %v, want ErrInvalid", text, err)
+		}
+	}
+}
+
+// TestParseOmitsCredentials checks that a refused URL's error never repeats
+// a user, password, path, or query, which may hold a credential, and names
+// the scheme and host when it can.
+func TestParseOmitsCredentials(t *testing.T) {
+	for text, want := range map[string]string{
+		"https://admin:hunter2@app.example.com":       "got https://app.example.com",
+		"https://hunter2@app.example.com":             "got https://app.example.com",
+		"https://app.example.com/?key=hunter2":        "got https://app.example.com",
+		"https://app.example.com/hunter2":             "got https://app.example.com",
+		"https://admin:hunter2@app.example.com:99999": "got https://app.example.com:99999",
+		"https://admin:hunter2@[::1%zone]":            ErrInvalid.Error(),
+		"https://admin:hun ter2@app.example.com":      ErrInvalid.Error(),
+	} {
+		_, err := Parse(text)
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("Parse(%q) = %v, want ErrInvalid", text, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "admin") {
+			t.Errorf("Parse(%q) error %q repeats the credential", text, err)
+		}
+		if !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("Parse(%q) error %q, want it to end %q", text, err, want)
 		}
 	}
 }
