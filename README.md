@@ -32,4 +32,4 @@ secure := publicorigin.Secure(req) // set cookies Secure, allow the __Host- pref
   ASCII (use the xn-- form). Its error names at most a refused URL's scheme and host, never a
   user, password, path, or query that may hold a credential.
 
-Tested on the two newest Go releases. Licensed under the MIT license.
+Requires Go 1.27. Licensed under the MIT license.
